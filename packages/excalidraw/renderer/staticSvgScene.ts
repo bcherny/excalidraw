@@ -5,6 +5,7 @@ import {
   THEME,
   DARK_THEME_FILTER,
   getFontFamilyString,
+  getFontString,
   isRTL,
   isTestEnv,
   getVerticalOffset,
@@ -20,7 +21,8 @@ import {
 } from "@excalidraw/element";
 import { LinearElementEditor } from "@excalidraw/element";
 import { getBoundTextElement, getContainerElement } from "@excalidraw/element";
-import { getLineHeightInPx } from "@excalidraw/element";
+import { getLineHeightInPx, getLineWidth } from "@excalidraw/element";
+import { getPerCharColors, getColorSegments } from "@excalidraw/element";
 import {
   isArrowElement,
   isIframeLikeElement,
@@ -38,6 +40,7 @@ import { getElementAbsoluteCoords } from "@excalidraw/element";
 
 import type {
   ExcalidrawElement,
+  ExcalidrawTextElement,
   ExcalidrawTextElementWithContainer,
   NonDeletedExcalidrawElement,
 } from "@excalidraw/element/types";
@@ -668,24 +671,71 @@ const renderElementToSvg = (
             : element.textAlign === "right" || direction === "rtl"
             ? "end"
             : "start";
+        const perCharColors = getPerCharColors(
+          element as ExcalidrawTextElement,
+          renderConfig.theme === THEME.DARK ? "dark" : "light",
+          applyDarkModeFilter,
+        );
+        const font = getFontString(element as ExcalidrawTextElement);
+        const defaultFill =
+          renderConfig.theme === THEME.DARK
+            ? applyDarkModeFilter(element.strokeColor)
+            : element.strokeColor;
+
+        let charOffset = 0;
         for (let i = 0; i < lines.length; i++) {
           const text = svgRoot.ownerDocument.createElementNS(SVG_NS, "text");
-          text.textContent = lines[i];
-          text.setAttribute("x", `${horizontalOffset}`);
           text.setAttribute("y", `${i * lineHeightPx + verticalOffset}`);
           text.setAttribute("font-family", getFontFamilyString(element));
           text.setAttribute("font-size", `${element.fontSize}px`);
-          text.setAttribute(
-            "fill",
-            renderConfig.theme === THEME.DARK
-              ? applyDarkModeFilter(element.strokeColor)
-              : element.strokeColor,
-          );
-          text.setAttribute("text-anchor", textAnchor);
           text.setAttribute("style", "white-space: pre;");
           text.setAttribute("direction", direction);
           text.setAttribute("dominant-baseline", "alphabetic");
+
+          const line = lines[i];
+          const lineColors = perCharColors
+            ? perCharColors.slice(charOffset, charOffset + line.length)
+            : null;
+          const segments = lineColors && getColorSegments(line, lineColors);
+          const hasMultipleColors =
+            segments && segments.some((s) => s.color !== defaultFill);
+
+          if (hasMultipleColors && segments) {
+            // Use tspan elements for colored segments, position manually
+            const fullLineWidth = getLineWidth(line, font);
+            let startX: number;
+            if (element.textAlign === "center") {
+              startX = (element.width - fullLineWidth) / 2;
+            } else if (element.textAlign === "right") {
+              startX = element.width - fullLineWidth;
+            } else {
+              startX = 0;
+            }
+            text.setAttribute("x", `${startX}`);
+            text.setAttribute("text-anchor", "start");
+
+            let xPos = startX;
+            for (const segment of segments) {
+              const tspan = svgRoot.ownerDocument.createElementNS(
+                SVG_NS,
+                "tspan",
+              );
+              tspan.textContent = segment.text;
+              tspan.setAttribute("x", `${xPos}`);
+              tspan.setAttribute("fill", segment.color);
+              text.appendChild(tspan);
+              xPos += getLineWidth(segment.text, font);
+            }
+          } else {
+            // Single color line — original behavior
+            text.textContent = line;
+            text.setAttribute("x", `${horizontalOffset}`);
+            text.setAttribute("fill", defaultFill);
+            text.setAttribute("text-anchor", textAnchor);
+          }
+
           node.appendChild(text);
+          charOffset += line.length + 1;
         }
 
         const g = maybeWrapNodesInFrameClipPath(

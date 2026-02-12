@@ -40,6 +40,11 @@ import {
   isBoundToContainer,
   isTextElement,
 } from "@excalidraw/element";
+import {
+  shiftColorRanges,
+  getColorSegments,
+  getPerCharColors,
+} from "@excalidraw/element";
 
 import type {
   ExcalidrawElement,
@@ -331,7 +336,117 @@ export const textWysiwyg = ({
     boxSizing: "content-box",
   });
   editable.value = element.originalText;
+
+  // --- Mirror div for colored text preview ---
+  let mirrorDiv: HTMLDivElement | null = null;
+
+  const createOrUpdateMirrorDiv = () => {
+    const updatedTextElement = app.scene.getElement<ExcalidrawTextElement>(id);
+    if (!updatedTextElement?.colorRanges?.length) {
+      // No color ranges — remove mirror div if it exists
+      if (mirrorDiv) {
+        mirrorDiv.remove();
+        mirrorDiv = null;
+        editable.style.webkitTextFillColor = "";
+        editable.style.caretColor = "";
+      }
+      return;
+    }
+
+    if (!mirrorDiv) {
+      mirrorDiv = document.createElement("div");
+      mirrorDiv.classList.add("excalidraw-wysiwyg-mirror");
+      Object.assign(mirrorDiv.style, {
+        position: "absolute",
+        pointerEvents: "none",
+        userSelect: "none",
+        overflow: "hidden",
+        boxSizing: "content-box",
+        margin: 0,
+        padding: 0,
+        border: 0,
+      });
+      // Insert mirror div before the textarea so it appears behind
+      editable.parentElement?.insertBefore(mirrorDiv, editable);
+    }
+
+    // Make textarea text invisible but keep caret visible
+    const currentColor = editable.style.color || updatedTextElement.strokeColor;
+    editable.style.webkitTextFillColor = "transparent";
+    editable.style.caretColor = currentColor;
+
+    // Sync mirror div styles with editable
+    Object.assign(mirrorDiv.style, {
+      font: editable.style.font,
+      lineHeight: editable.style.lineHeight,
+      width: editable.style.width,
+      height: editable.style.height,
+      left: editable.style.left,
+      top: editable.style.top,
+      transform: editable.style.transform,
+      textAlign: editable.style.textAlign,
+      opacity: editable.style.opacity,
+      maxHeight: editable.style.maxHeight,
+      whiteSpace: editable.style.whiteSpace,
+      wordBreak: editable.style.wordBreak,
+      overflowWrap: editable.style.overflowWrap,
+      zIndex: `calc(var(--zIndex-wysiwyg) - 1)`,
+    });
+    if (isTestEnv()) {
+      mirrorDiv.style.fontFamily = editable.style.fontFamily;
+    }
+
+    // Render colored spans
+    const text = editable.value;
+    const theme = app.state.theme === THEME.DARK ? "dark" : "light";
+
+    // Build a temporary element-like object to use getPerCharColors
+    const tempElement = {
+      ...updatedTextElement,
+      originalText: text,
+      text,
+    } as ExcalidrawTextElement;
+
+    const perCharColors = getPerCharColors(
+      tempElement,
+      theme as "light" | "dark",
+      applyDarkModeFilter,
+    );
+
+    if (!perCharColors) {
+      mirrorDiv.textContent = text;
+      return;
+    }
+
+    mirrorDiv.innerHTML = "";
+    const lines = text.split("\n");
+    let charOffset = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineColors = perCharColors.slice(
+        charOffset,
+        charOffset + line.length,
+      );
+      const segments = getColorSegments(line, lineColors);
+
+      for (const segment of segments) {
+        const span = document.createElement("span");
+        span.textContent = segment.text;
+        span.style.color = segment.color;
+        mirrorDiv.appendChild(span);
+      }
+      if (i < lines.length - 1) {
+        mirrorDiv.appendChild(document.createElement("br"));
+      }
+      charOffset += line.length + 1;
+    }
+  };
+
+  // Track previous text for computing range shifts
+  let previousText = element.originalText;
+
   updateWysiwygStyle();
+  createOrUpdateMirrorDiv();
 
   if (onChange) {
     editable.onpaste = async (event) => {
@@ -428,7 +543,49 @@ export const textWysiwyg = ({
         editable.selectionStart = selectionStart;
         editable.selectionEnd = selectionStart;
       }
+
+      // Shift color ranges when text changes
+      const currentText = editable.value;
+      const updatedEl = app.scene.getElement<ExcalidrawTextElement>(id);
+      if (updatedEl?.colorRanges?.length) {
+        const cursorPos = editable.selectionStart;
+        const prevLen = previousText.length;
+        const currLen = currentText.length;
+        const delta = currLen - prevLen;
+
+        if (delta !== 0) {
+          let editStart: number;
+          let insertedLength: number;
+          let deletedLength: number;
+
+          if (delta > 0) {
+            // Text was inserted
+            editStart = cursorPos - delta;
+            insertedLength = delta;
+            deletedLength = 0;
+          } else {
+            // Text was deleted
+            editStart = cursorPos;
+            insertedLength = 0;
+            deletedLength = -delta;
+          }
+
+          const newRanges = shiftColorRanges(
+            updatedEl.colorRanges,
+            editStart,
+            insertedLength,
+            deletedLength,
+          );
+
+          app.scene.mutateElement(updatedEl, {
+            colorRanges: newRanges?.length ? newRanges : undefined,
+          } as any);
+        }
+      }
+      previousText = currentText;
+
       onChange(editable.value);
+      createOrUpdateMirrorDiv();
     };
   }
 
@@ -664,6 +821,10 @@ export const textWysiwyg = ({
     unsubOnChange();
     unbindOnScroll();
 
+    if (mirrorDiv) {
+      mirrorDiv.remove();
+      mirrorDiv = null;
+    }
     editable.remove();
   };
 
@@ -770,6 +931,7 @@ export const textWysiwyg = ({
   // handle updates of textElement properties of editing element
   const unbindUpdate = app.scene.onUpdate(() => {
     updateWysiwygStyle();
+    createOrUpdateMirrorDiv();
     const isPopupOpened = !!document.activeElement?.closest(
       ".properties-content",
     );
