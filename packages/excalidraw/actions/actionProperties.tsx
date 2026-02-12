@@ -53,6 +53,7 @@ import {
 } from "@excalidraw/element";
 
 import { hasStrokeColor } from "@excalidraw/element";
+import { applyColorToRange } from "@excalidraw/element";
 
 import {
   updateElbowArrowPoints,
@@ -139,6 +140,7 @@ import {
 } from "../scene";
 
 import {
+  saveCaretPosition,
   withCaretPositionPreservation,
   restoreCaretPosition,
 } from "../hooks/useTextEditorFocus";
@@ -315,29 +317,68 @@ export const actionChangeStrokeColor = register<
   name: "changeStrokeColor",
   label: "labels.stroke",
   trackEvent: false,
-  perform: (elements, appState, value) => {
-    return {
-      ...(value?.currentItemStrokeColor && {
-        elements: changeProperty(
-          elements,
-          appState,
-          (el) => {
-            return hasStrokeColor(el.type)
-              ? newElementWith(el, {
-                  strokeColor: value.currentItemStrokeColor,
-                })
-              : el;
+  perform: (elements, appState, value, app) => {
+    if (!value?.currentItemStrokeColor) {
+      return {
+        appState: {
+          ...appState,
+          ...value,
+        },
+        captureUpdate: CaptureUpdateAction.EVENTUALLY,
+      };
+    }
+
+    const color = value.currentItemStrokeColor;
+
+    // When editing text, apply color to selected range instead of whole element
+    if (appState.editingTextElement) {
+      const caretPos = saveCaretPosition();
+      if (caretPos && caretPos.start !== caretPos.end) {
+        const editingId = appState.editingTextElement.id;
+        return {
+          elements: elements.map((el) => {
+            if (el.id === editingId && isTextElement(el)) {
+              const textEl = el as ExcalidrawTextElement;
+              const newColorRanges = applyColorToRange(
+                textEl.colorRanges,
+                caretPos.start,
+                caretPos.end,
+                color,
+                textEl.strokeColor,
+              );
+              return newElementWith(el, {
+                colorRanges: newColorRanges.length ? newColorRanges : undefined,
+              } as any);
+            }
+            return el;
+          }),
+          appState: {
+            ...appState,
+            ...value,
           },
-          true,
-        ),
-      }),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        };
+      }
+    }
+
+    return {
+      elements: changeProperty(
+        elements,
+        appState,
+        (el) => {
+          return hasStrokeColor(el.type)
+            ? newElementWith(el, {
+                strokeColor: color,
+              })
+            : el;
+        },
+        true,
+      ),
       appState: {
         ...appState,
         ...value,
       },
-      captureUpdate: !!value?.currentItemStrokeColor
-        ? CaptureUpdateAction.IMMEDIATELY
-        : CaptureUpdateAction.EVENTUALLY,
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
     };
   },
   PanelComponent: ({ elements, appState, updateData, app, data }) => {
@@ -353,14 +394,45 @@ export const actionChangeStrokeColor = register<
           palette={DEFAULT_ELEMENT_STROKE_COLOR_PALETTE}
           type="elementStroke"
           label={t("labels.stroke")}
-          color={getFormValue(
-            elements,
-            app,
-            (element) => element.strokeColor,
-            true,
-            (hasSelection) =>
-              !hasSelection ? appState.currentItemStrokeColor : null,
-          )}
+          color={(() => {
+            // Show the color of the selected text range if editing
+            if (appState.editingTextElement) {
+              const caretPos = saveCaretPosition();
+              if (caretPos && caretPos.start !== caretPos.end) {
+                const editingEl = app.scene.getElement(
+                  appState.editingTextElement.id,
+                ) as ExcalidrawTextElement | undefined;
+                if (editingEl?.colorRanges?.length) {
+                  const rangeColors = new Set<string>();
+                  for (const range of editingEl.colorRanges) {
+                    if (
+                      range.start < caretPos.end &&
+                      range.end > caretPos.start
+                    ) {
+                      rangeColors.add(range.color);
+                    }
+                  }
+                  if (rangeColors.size === 1) {
+                    return [...rangeColors][0];
+                  }
+                  if (rangeColors.size > 1) {
+                    return null;
+                  }
+                }
+                return (
+                  editingEl?.strokeColor ?? appState.currentItemStrokeColor
+                );
+              }
+            }
+            return getFormValue(
+              elements,
+              app,
+              (element) => element.strokeColor,
+              true,
+              (hasSelection) =>
+                !hasSelection ? appState.currentItemStrokeColor : null,
+            );
+          })()}
           onChange={(color) => updateData({ currentItemStrokeColor: color })}
           elements={elements}
           appState={appState}

@@ -232,6 +232,12 @@ export type NonDeleted<TElement extends ExcalidrawElement> = TElement & {
 
 export type NonDeletedExcalidrawElement = NonDeleted<ExcalidrawElement>;
 
+export type TextColorRange = Readonly<{
+  start: number;
+  end: number;
+  color: string;
+}>;
+
 export type ExcalidrawTextElement = _ExcalidrawElementBase &
   Readonly<{
     type: "text";
@@ -254,6 +260,8 @@ export type ExcalidrawTextElement = _ExcalidrawElementBase &
      *  with font size (using `getLineHeightInPx` helper).
      */
     lineHeight: number & { _brand: "unitlessLineHeight" };
+    /** Per-range color overrides. Indices refer to originalText. */
+    colorRanges?: readonly TextColorRange[];
   }>;
 
 export type ExcalidrawBindableElement =

@@ -365,6 +365,18 @@ export const restoreElement = (
           : // no element height likely means programmatic use, so default
             // to a fixed line height
             getLineHeight(element.fontFamily));
+      const colorRanges = Array.isArray(element.colorRanges)
+        ? element.colorRanges.filter(
+            (r: any) =>
+              r &&
+              typeof r.start === "number" &&
+              typeof r.end === "number" &&
+              typeof r.color === "string" &&
+              r.start >= 0 &&
+              r.start < r.end,
+          )
+        : undefined;
+
       element = restoreElementWithProperties(element, {
         fontSize,
         fontFamily,
@@ -375,6 +387,7 @@ export const restoreElement = (
         originalText: element.originalText || text,
         autoResize: element.autoResize ?? true,
         lineHeight,
+        ...(colorRanges?.length ? { colorRanges } : {}),
       });
 
       // if empty text, mark as deleted. We keep in array

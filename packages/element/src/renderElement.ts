@@ -52,7 +52,8 @@ import {
   getBoundTextMaxHeight,
   getBoundTextMaxWidth,
 } from "./textElement";
-import { getLineHeightInPx } from "./textMeasurements";
+import { getLineHeightInPx, getLineWidth } from "./textMeasurements";
+import { getPerCharColors, getColorSegments } from "./textColorRanges";
 import {
   isTextElement,
   isLinearElement,
@@ -554,22 +555,16 @@ const drawElementOnCanvas = (
         }
         context.canvas.setAttribute("dir", rtl ? "rtl" : "ltr");
         context.save();
-        context.font = getFontString(element);
-        context.fillStyle =
+        const font = getFontString(element);
+        context.font = font;
+        const defaultColor =
           renderConfig.theme === THEME.DARK
             ? applyDarkModeFilter(element.strokeColor)
             : element.strokeColor;
-        context.textAlign = element.textAlign as CanvasTextAlign;
+        context.fillStyle = defaultColor;
 
         // Canvas does not support multiline text by default
         const lines = element.text.replace(/\r\n?/g, "\n").split("\n");
-
-        const horizontalOffset =
-          element.textAlign === "center"
-            ? element.width / 2
-            : element.textAlign === "right"
-            ? element.width
-            : 0;
 
         const lineHeightPx = getLineHeightInPx(
           element.fontSize,
@@ -582,12 +577,65 @@ const drawElementOnCanvas = (
           lineHeightPx,
         );
 
-        for (let index = 0; index < lines.length; index++) {
-          context.fillText(
-            lines[index],
-            horizontalOffset,
-            index * lineHeightPx + verticalOffset,
-          );
+        const perCharColors = getPerCharColors(
+          element,
+          renderConfig.theme === THEME.DARK ? "dark" : "light",
+          applyDarkModeFilter,
+        );
+
+        if (perCharColors) {
+          // Segmented rendering for colored text — we must position
+          // segments manually since canvas textAlign would apply per-segment
+          context.textAlign = "left";
+          let charOffset = 0;
+
+          for (let index = 0; index < lines.length; index++) {
+            const line = lines[index];
+            const lineColors = perCharColors.slice(
+              charOffset,
+              charOffset + line.length,
+            );
+            const segments = getColorSegments(line, lineColors);
+
+            const fullLineWidth = getLineWidth(line, font);
+            let startX: number;
+            if (element.textAlign === "center") {
+              startX = (element.width - fullLineWidth) / 2;
+            } else if (element.textAlign === "right") {
+              startX = element.width - fullLineWidth;
+            } else {
+              startX = 0;
+            }
+
+            let xPos = startX;
+            const yPos = index * lineHeightPx + verticalOffset;
+            for (const segment of segments) {
+              context.fillStyle = segment.color;
+              context.fillText(segment.text, xPos, yPos);
+              xPos += getLineWidth(segment.text, font);
+            }
+
+            // +1 for the newline character between lines
+            charOffset += line.length + 1;
+          }
+        } else {
+          // Original rendering (no color ranges)
+          context.textAlign = element.textAlign as CanvasTextAlign;
+
+          const horizontalOffset =
+            element.textAlign === "center"
+              ? element.width / 2
+              : element.textAlign === "right"
+              ? element.width
+              : 0;
+
+          for (let index = 0; index < lines.length; index++) {
+            context.fillText(
+              lines[index],
+              horizontalOffset,
+              index * lineHeightPx + verticalOffset,
+            );
+          }
         }
         context.restore();
         if (shouldTemporarilyAttach) {
